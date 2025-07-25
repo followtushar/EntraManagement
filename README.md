@@ -146,34 +146,38 @@ APP_NAME="entra-management-app"
 az group create --name $RESOURCE_GROUP --location "$LOCATION"
 ```
 
-#### Step 2.2: Create PostgreSQL Database
+#### Step 2.2: Create Azure SQL Database
 
 ```bash
-# Create PostgreSQL server
-az postgres flexible-server create \
+# Create Azure SQL Server
+az sql server create \
   --resource-group $RESOURCE_GROUP \
-  --name "${APP_NAME}-db" \
+  --name "${APP_NAME}-sql-server" \
   --location "$LOCATION" \
   --admin-user entraapiuser \
-  --admin-password "YourSecurePassword123!" \
-  --sku-name Standard_B1ms \
-  --tier Burstable \
-  --storage-size 32 \
-  --version 14
+  --admin-password "YourSecurePassword123!"
+
+# Create SQL Database
+az sql db create \
+  --resource-group $RESOURCE_GROUP \
+  --server "${APP_NAME}-sql-server" \
+  --name "entra-compliance" \
+  --service-objective Basic \
+  --backup-storage-redundancy Local
 
 # Configure firewall (allow Azure services)
-az postgres flexible-server firewall-rule create \
+az sql server firewall-rule create \
   --resource-group $RESOURCE_GROUP \
-  --name "${APP_NAME}-db" \
-  --rule-name AllowAzureServices \
+  --server "${APP_NAME}-sql-server" \
+  --name AllowAzureServices \
   --start-ip-address 0.0.0.0 \
   --end-ip-address 0.0.0.0
 
 # Allow your local IP for setup (replace with your IP)
-az postgres flexible-server firewall-rule create \
+az sql server firewall-rule create \
   --resource-group $RESOURCE_GROUP \
-  --name "${APP_NAME}-db" \
-  --rule-name AllowLocalIP \
+  --server "${APP_NAME}-sql-server" \
+  --name AllowLocalIP \
   --start-ip-address YOUR_LOCAL_IP \
   --end-ip-address YOUR_LOCAL_IP
 ```
@@ -222,34 +226,42 @@ az monitor app-insights component create \
 
 ### Phase 3: Database Setup 💾
 
-#### Step 3.1: Connect to PostgreSQL
+#### Step 3.1: Connect to Azure SQL Database
 
 ```bash
-# Get connection string
-az postgres flexible-server show-connection-string \
-  --server-name "${APP_NAME}-db" \
-  --database-name postgres \
-  --admin-user entraapiuser \
-  --admin-password "YourSecurePassword123!"
+# Get connection details
+echo "Server: ${APP_NAME}-sql-server.database.windows.net"
+echo "Database: entra-compliance"
+echo "Username: entraapiuser"
+echo "Password: YourSecurePassword123!"
 ```
 
-#### Step 3.2: Create Database and Schema
+#### Step 3.2: Create Database Schema
 
-1. **Connect using psql**:
-   ```bash
-   psql "host=${APP_NAME}-db.postgres.database.azure.com port=5432 dbname=postgres user=entraapiuser password=YourSecurePassword123! sslmode=require"
+1. **Connect using Azure Data Studio or SQL Server Management Studio**:
+   ```
+   Server: your-app-sql-server.database.windows.net
+   Database: entra-compliance
+   Authentication: SQL Server Authentication
+   Username: entraapiuser
+   Password: YourSecurePassword123!
    ```
 
-2. **Create database**:
-   ```sql
-   CREATE DATABASE entra_compliance;
-   \c entra_compliance;
+2. **Alternative: Connect using sqlcmd** (if installed):
+   ```bash
+   sqlcmd -S "${APP_NAME}-sql-server.database.windows.net" -d "entra-compliance" -U "entraapiuser" -P "YourSecurePassword123!" -G -l 30
    ```
 
 3. **Run the schema script** (copy from `backend/database/schema.sql`):
    ```sql
    -- Copy and paste the entire content of backend/database/schema.sql here
    -- This includes all table creations, indexes, and sample data
+   -- The schema has been converted to SQL Server syntax
+   ```
+
+4. **Verify tables were created**:
+   ```sql
+   SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_TYPE = 'BASE TABLE';
    ```
 
 ### Phase 4: Local Development Setup 💻
@@ -282,13 +294,13 @@ npm run install:all
    PORT=5000
    API_VERSION=v1
 
-   # Database Configuration
-   DB_HOST=your-app-db.postgres.database.azure.com
-   DB_PORT=5432
+   # Azure SQL Database Configuration
+   DB_SERVER=your-app-sql-server.database.windows.net
+   DB_PORT=1433
    DB_NAME=entra_compliance
    DB_USER=entraapiuser
    DB_PASSWORD=YourSecurePassword123!
-   DB_SSL=true
+   DB_ENCRYPT=true
 
    # Redis Configuration
    REDIS_HOST=your-app-redis.redis.cache.windows.net
@@ -408,19 +420,19 @@ On Your Network:  http://192.168.x.x:3000
 #### Step 6.2: Deploy Backend to Azure App Service
 
 ```bash
-# Configure App Service settings
-az webapp config appsettings set \
-  --resource-group $RESOURCE_GROUP \
-  --name "${APP_NAME}-backend" \
-  --settings \
-    NODE_ENV=production \
-    PORT=8000 \
-    DB_HOST="${APP_NAME}-db.postgres.database.azure.com" \
-    DB_PORT=5432 \
-    DB_NAME=entra_compliance \
-    DB_USER=entraapiuser \
-    DB_PASSWORD="YourSecurePassword123!" \
-    DB_SSL=true \
+ # Configure App Service settings
+ az webapp config appsettings set \
+   --resource-group $RESOURCE_GROUP \
+   --name "${APP_NAME}-backend" \
+   --settings \
+     NODE_ENV=production \
+     PORT=8000 \
+     DB_SERVER="${APP_NAME}-sql-server.database.windows.net" \
+     DB_PORT=1433 \
+     DB_NAME=entra_compliance \
+     DB_USER=entraapiuser \
+     DB_PASSWORD="YourSecurePassword123!" \
+     DB_ENCRYPT=true \
     REDIS_HOST="${APP_NAME}-redis.redis.cache.windows.net" \
     REDIS_PORT=6380 \
     REDIS_TLS=true \
@@ -538,15 +550,15 @@ az monitor metrics alert create \
 **Solution**:
 ```bash
 # Check firewall rules
-az postgres flexible-server firewall-rule list \
+az sql server firewall-rule list \
   --resource-group $RESOURCE_GROUP \
-  --name "${APP_NAME}-db"
+  --server "${APP_NAME}-sql-server"
 
 # Add your App Service IP to firewall
-az postgres flexible-server firewall-rule create \
+az sql server firewall-rule create \
   --resource-group $RESOURCE_GROUP \
-  --name "${APP_NAME}-db" \
-  --rule-name AllowAppService \
+  --server "${APP_NAME}-sql-server" \
+  --name AllowAppService \
   --start-ip-address 0.0.0.0 \
   --end-ip-address 255.255.255.255
 ```

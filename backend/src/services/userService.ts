@@ -1,28 +1,29 @@
-import { getDb } from '../config/database';
+import { executeQuery } from '../config/database';
 import { User, UserRole } from '../types';
 import { logger } from '../utils/logger';
+import sql from 'mssql';
 
 class UserService {
   async createUser(userData: Partial<User>): Promise<User> {
-    const db = getDb();
-    
     try {
       const query = `
-        INSERT INTO users (id, email, name, role, tenant_id)
-        VALUES ($1, $2, $3, $4, $5)
-        RETURNING *
+        INSERT INTO users (id, email, name, role, tenant_id, preferences)
+        VALUES (@id, @email, @name, @role, @tenantId, @preferences);
+        
+        SELECT * FROM users WHERE id = @id;
       `;
       
-      const values = [
-        userData.id,
-        userData.email,
-        userData.name,
-        userData.role || UserRole.VIEWER,
-        userData.tenantId
-      ];
+      const params = {
+        id: userData.id,
+        email: userData.email,
+        name: userData.name,
+        role: userData.role || UserRole.VIEWER,
+        tenantId: userData.tenantId,
+        preferences: JSON.stringify(userData.preferences || {})
+      };
       
-      const result = await db.query(query, values);
-      return this.mapDbUserToUser(result.rows[0]);
+      const result = await executeQuery(query, params);
+      return this.mapDbUserToUser(result.recordset[0]);
     } catch (error) {
       logger.error('Error creating user:', error);
       throw error;
@@ -30,17 +31,15 @@ class UserService {
   }
 
   async getUserById(id: string): Promise<User | null> {
-    const db = getDb();
-    
     try {
-      const query = 'SELECT * FROM users WHERE id = $1';
-      const result = await db.query(query, [id]);
+      const query = 'SELECT * FROM users WHERE id = @id';
+      const result = await executeQuery(query, { id });
       
-      if (result.rows.length === 0) {
+      if (result.recordset.length === 0) {
         return null;
       }
       
-      return this.mapDbUserToUser(result.rows[0]);
+      return this.mapDbUserToUser(result.recordset[0]);
     } catch (error) {
       logger.error('Error getting user by ID:', error);
       throw error;
@@ -48,17 +47,15 @@ class UserService {
   }
 
   async getUserByEmail(email: string): Promise<User | null> {
-    const db = getDb();
-    
     try {
-      const query = 'SELECT * FROM users WHERE email = $1';
-      const result = await db.query(query, [email]);
+      const query = 'SELECT * FROM users WHERE email = @email';
+      const result = await executeQuery(query, { email });
       
-      if (result.rows.length === 0) {
+      if (result.recordset.length === 0) {
         return null;
       }
       
-      return this.mapDbUserToUser(result.rows[0]);
+      return this.mapDbUserToUser(result.recordset[0]);
     } catch (error) {
       logger.error('Error getting user by email:', error);
       throw error;
@@ -66,44 +63,51 @@ class UserService {
   }
 
   async updateUser(id: string, userData: Partial<User>): Promise<User | null> {
-    const db = getDb();
-    
     try {
-      const setClause = [];
-      const values = [];
-      let paramIndex = 1;
-
+      const updateFields: string[] = [];
+      const params: any = { id };
+      
+      if (userData.email) {
+        updateFields.push('email = @email');
+        params.email = userData.email;
+      }
+      
       if (userData.name) {
-        setClause.push(`name = $${paramIndex++}`);
-        values.push(userData.name);
+        updateFields.push('name = @name');
+        params.name = userData.name;
       }
       
       if (userData.role) {
-        setClause.push(`role = $${paramIndex++}`);
-        values.push(userData.role);
+        updateFields.push('role = @role');
+        params.role = userData.role;
       }
-
-      if (setClause.length === 0) {
+      
+      if (userData.preferences) {
+        updateFields.push('preferences = @preferences');
+        params.preferences = JSON.stringify(userData.preferences);
+      }
+      
+      if (updateFields.length === 0) {
         return this.getUserById(id);
       }
-
-      setClause.push(`updated_at = CURRENT_TIMESTAMP`);
-      values.push(id);
-
+      
+      updateFields.push('updated_at = GETUTCDATE()');
+      
       const query = `
         UPDATE users 
-        SET ${setClause.join(', ')}
-        WHERE id = $${paramIndex}
-        RETURNING *
+        SET ${updateFields.join(', ')}
+        WHERE id = @id;
+        
+        SELECT * FROM users WHERE id = @id;
       `;
       
-      const result = await db.query(query, values);
+      const result = await executeQuery(query, params);
       
-      if (result.rows.length === 0) {
+      if (result.recordset.length === 0) {
         return null;
       }
       
-      return this.mapDbUserToUser(result.rows[0]);
+      return this.mapDbUserToUser(result.recordset[0]);
     } catch (error) {
       logger.error('Error updating user:', error);
       throw error;
@@ -111,59 +115,104 @@ class UserService {
   }
 
   async deleteUser(id: string): Promise<boolean> {
-    const db = getDb();
-    
     try {
-      const query = 'DELETE FROM users WHERE id = $1';
-      const result = await db.query(query, [id]);
+      const query = 'DELETE FROM users WHERE id = @id';
+      const result = await executeQuery(query, { id });
       
-      return result.rowCount > 0;
+      return result.rowsAffected && result.rowsAffected[0] > 0;
     } catch (error) {
       logger.error('Error deleting user:', error);
       throw error;
     }
   }
 
-  async getAllUsers(tenantId?: string): Promise<User[]> {
-    const db = getDb();
-    
+  async getAllUsers(
+    page: number = 1,
+    limit: number = 10,
+    role?: UserRole,
+    tenantId?: string
+  ): Promise<{ users: User[]; total: number }> {
     try {
-      let query = 'SELECT * FROM users';
-      const values = [];
+      const offset = (page - 1) * limit;
+      let whereClause = '';
+      const params: any = { limit, offset };
       
-      if (tenantId) {
-        query += ' WHERE tenant_id = $1';
-        values.push(tenantId);
+      const conditions: string[] = [];
+      
+      if (role) {
+        conditions.push('role = @role');
+        params.role = role;
       }
       
-      query += ' ORDER BY created_at DESC';
+      if (tenantId) {
+        conditions.push('tenant_id = @tenantId');
+        params.tenantId = tenantId;
+      }
       
-      const result = await db.query(query, values);
-      return result.rows.map(row => this.mapDbUserToUser(row));
+      if (conditions.length > 0) {
+        whereClause = `WHERE ${conditions.join(' AND ')}`;
+      }
+      
+      // Get total count
+      const countQuery = `SELECT COUNT(*) as total FROM users ${whereClause}`;
+      const countResult = await executeQuery(countQuery, params);
+      const total = countResult.recordset[0].total;
+      
+      // Get paginated users
+      const query = `
+        SELECT * FROM users 
+        ${whereClause}
+        ORDER BY created_at DESC
+        OFFSET @offset ROWS
+        FETCH NEXT @limit ROWS ONLY
+      `;
+      
+      const result = await executeQuery(query, params);
+      const users = result.recordset.map(row => this.mapDbUserToUser(row));
+      
+      return { users, total };
     } catch (error) {
       logger.error('Error getting all users:', error);
       throw error;
     }
   }
 
-  async getUsersByRole(role: UserRole, tenantId?: string): Promise<User[]> {
-    const db = getDb();
-    
+  async getUsersByTenant(tenantId: string): Promise<User[]> {
     try {
-      let query = 'SELECT * FROM users WHERE role = $1';
-      const values = [role];
+      const query = 'SELECT * FROM users WHERE tenant_id = @tenantId ORDER BY created_at DESC';
+      const result = await executeQuery(query, { tenantId });
       
-      if (tenantId) {
-        query += ' AND tenant_id = $2';
-        values.push(tenantId);
+      return result.recordset.map(row => this.mapDbUserToUser(row));
+    } catch (error) {
+      logger.error('Error getting users by tenant:', error);
+      throw error;
+    }
+  }
+
+  async updateUserPreferences(id: string, preferences: any): Promise<User | null> {
+    try {
+      const query = `
+        UPDATE users 
+        SET preferences = @preferences, updated_at = GETUTCDATE()
+        WHERE id = @id;
+        
+        SELECT * FROM users WHERE id = @id;
+      `;
+      
+      const params = {
+        id,
+        preferences: JSON.stringify(preferences)
+      };
+      
+      const result = await executeQuery(query, params);
+      
+      if (result.recordset.length === 0) {
+        return null;
       }
       
-      query += ' ORDER BY created_at DESC';
-      
-      const result = await db.query(query, values);
-      return result.rows.map(row => this.mapDbUserToUser(row));
+      return this.mapDbUserToUser(result.recordset[0]);
     } catch (error) {
-      logger.error('Error getting users by role:', error);
+      logger.error('Error updating user preferences:', error);
       throw error;
     }
   }
@@ -175,6 +224,7 @@ class UserService {
       name: dbUser.name,
       role: dbUser.role as UserRole,
       tenantId: dbUser.tenant_id,
+      preferences: dbUser.preferences ? JSON.parse(dbUser.preferences) : {},
       createdAt: dbUser.created_at,
       updatedAt: dbUser.updated_at
     };
