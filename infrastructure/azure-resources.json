@@ -40,7 +40,7 @@
     "webAppPortalName": "[concat(parameters('webAppName'), '-backend')]",
     "appServicePlanName": "[concat('AppServicePlan-', parameters('webAppName'))]",
     "sqlServerName": "[concat('sql-', parameters('webAppName'), '-', uniqueString(resourceGroup().id))]",
-    "sqlDatabaseName": "[concat(parameters('webAppName'), '-db')]",
+    "sqlDatabaseName": "entra-compliance",
     "redisName": "[concat('redis-', parameters('webAppName'), '-', uniqueString(resourceGroup().id))]",
     "appInsightsName": "[concat('appinsights-', parameters('webAppName'))]",
     "keyVaultName": "[concat('kv-', parameters('webAppName'), '-', uniqueString(resourceGroup().id))]",
@@ -82,12 +82,44 @@
               "value": "production"
             },
             {
-              "name": "DATABASE_URL",
-              "value": "[concat('postgresql://', parameters('sqlServerAdminLogin'), ':', parameters('sqlServerAdminPassword'), '@', reference(resourceId('Microsoft.Sql/servers', variables('sqlServerName'))).fullyQualifiedDomainName, ':5432/', variables('sqlDatabaseName'), '?sslmode=require')]"
+              "name": "PORT",
+              "value": "8000"
             },
             {
-              "name": "REDIS_URL",
-              "value": "[concat('redis://', reference(resourceId('Microsoft.Cache/Redis', variables('redisName'))).hostName, ':6380?abortConnect=false&tls=true')]"
+              "name": "DB_SERVER",
+              "value": "[reference(resourceId('Microsoft.Sql/servers', variables('sqlServerName'))).fullyQualifiedDomainName]"
+            },
+            {
+              "name": "DB_PORT",
+              "value": "1433"
+            },
+            {
+              "name": "DB_NAME",
+              "value": "[variables('sqlDatabaseName')]"
+            },
+            {
+              "name": "DB_USER",
+              "value": "[parameters('sqlServerAdminLogin')]"
+            },
+            {
+              "name": "DB_PASSWORD",
+              "value": "[parameters('sqlServerAdminPassword')]"
+            },
+            {
+              "name": "DB_ENCRYPT",
+              "value": "true"
+            },
+            {
+              "name": "REDIS_HOST",
+              "value": "[reference(resourceId('Microsoft.Cache/Redis', variables('redisName'))).hostName]"
+            },
+            {
+              "name": "REDIS_PORT",
+              "value": "6380"
+            },
+            {
+              "name": "REDIS_TLS",
+              "value": "true"
             },
             {
               "name": "APPINSIGHTS_INSTRUMENTATIONKEY",

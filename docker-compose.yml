@@ -1,26 +1,28 @@
 version: '3.8'
 
 services:
-  # PostgreSQL Database
-  postgres:
-    image: postgres:14-alpine
-    container_name: entra-postgres
+  # SQL Server Database
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2022-latest
+    container_name: entra-sqlserver
     environment:
-      POSTGRES_DB: entra_management
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: postgres
+      ACCEPT_EULA: Y
+      SA_PASSWORD: YourSecurePassword123!
+      MSSQL_PID: Express
     ports:
-      - "5432:5432"
+      - "1433:1433"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
-      - ./backend/database/schema.sql:/docker-entrypoint-initdb.d/schema.sql
+      - sqlserver_data:/var/opt/mssql
+      - ./backend/database/schema.sql:/var/opt/mssql/schema.sql
+      - ./backend/database/init-db.sh:/docker-entrypoint-initdb.d/init-db.sh
     networks:
       - entra-network
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U postgres"]
-      interval: 10s
-      timeout: 5s
+      test: ["CMD-SHELL", "/opt/mssql-tools/bin/sqlcmd -S localhost -U sa -P YourSecurePassword123! -Q 'SELECT 1'"]
+      interval: 30s
+      timeout: 10s
       retries: 5
+      start_period: 60s
 
   # Redis Cache
   redis:
@@ -46,29 +48,36 @@ services:
     container_name: entra-backend
     environment:
       NODE_ENV: development
-      PORT: 3001
-      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/entra_management
-      REDIS_URL: redis://redis:6379
-      JWT_SECRET: development-secret-key
+      PORT: 5000
+      DB_SERVER: sqlserver
+      DB_PORT: 1433
+      DB_NAME: entra_compliance
+      DB_USER: sa
+      DB_PASSWORD: YourSecurePassword123!
+      DB_ENCRYPT: false
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_TLS: false
+      JWT_SECRET: development-secret-key-at-least-64-characters-long-for-security
       AZURE_TENANT_ID: ${AZURE_TENANT_ID}
       AZURE_CLIENT_ID: ${AZURE_CLIENT_ID}
       AZURE_CLIENT_SECRET: ${AZURE_CLIENT_SECRET}
-      FRONTEND_URL: http://localhost:3000
+      CORS_ORIGIN: http://localhost:3000
     ports:
-      - "3001:3001"
+      - "5000:5000"
     volumes:
       - ./backend:/app
       - /app/node_modules
       - ./backend/logs:/app/logs
     depends_on:
-      postgres:
+      sqlserver:
         condition: service_healthy
       redis:
         condition: service_healthy
     networks:
       - entra-network
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:3001/health"]
+      test: ["CMD", "curl", "-f", "http://localhost:5000/api/health"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -81,8 +90,8 @@ services:
       args:
         REACT_APP_AZURE_CLIENT_ID: ${AZURE_CLIENT_ID}
         REACT_APP_AZURE_TENANT_ID: ${AZURE_TENANT_ID}
-        REACT_APP_REDIRECT_URI: http://localhost:3000/auth/callback
-        REACT_APP_API_URL: http://localhost:3001
+        REACT_APP_AZURE_REDIRECT_URI: http://localhost:3000/auth/callback
+        REACT_APP_API_BASE_URL: http://localhost:5000/api
     container_name: entra-frontend
     ports:
       - "3000:3000"
@@ -97,7 +106,7 @@ services:
       - CHOKIDAR_USEPOLLING=true
 
 volumes:
-  postgres_data:
+  sqlserver_data:
   redis_data:
 
 networks:
